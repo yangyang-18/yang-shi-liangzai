@@ -585,6 +585,15 @@ footer strong{color:rgba(15,23,42,.4);font-weight:600;}
 .cfg-modal .cmb input:focus,.cfg-modal .cmb select:focus{border-color:var(--accent);}
 .cfg-modal .cmb .cond-row{display:flex;gap:4px;align-items:center;margin-top:4px;}
 .cfg-modal .cmb .cond-row select,.cfg-modal .cmb .cond-row input{width:auto;flex:1;}
+.cfg-modal .cmb .cfg-builder{margin-top:4px;}
+.cfg-modal .cmb .cond-group{border:1px dashed var(--field-border);border-radius:8px;padding:6px;margin-top:6px;background:rgba(15,23,42,.02);}
+.cfg-modal .cmb .cond-group .cond-row:first-child{margin-top:0;}
+.cfg-modal .cmb .cg-ops{display:flex;gap:4px;margin-top:4px;flex-wrap:wrap;}
+.cfg-modal .cmb .cfg-add-sm{
+  font-size:.625rem;padding:3px 8px;border:1px solid var(--field-border);border-radius:6px;cursor:pointer;
+  background:var(--field-bg);color:var(--field-text);font-family:inherit;
+}
+.cfg-modal .cmb .cfg-add-sm:hover{background:rgba(37,99,235,.08);border-color:var(--accent-dim);color:var(--accent);}
 .cfg-modal .cmb .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end;}
 .cfg-modal .cmb .btn-row .btn{
   padding:7px 16px;border-radius:8px;font-size:.6875rem;font-weight:600;cursor:pointer;font-family:inherit;
@@ -1306,6 +1315,30 @@ function fuzzyMatchCities(q){
   return matches;
 }
 
+// 候选分级：山岳(0) > 其他风景名胜/户外(1) > 普通地点(2) > 行政区划(3)
+// 优先用来源类型（高德 type / 和风 type），无类型时按名称后缀兜底（正则用分组，$ 锚定结尾）
+const MT_SUF_MT=/(?:山|峰|岭|顶|岳|峦|嶂|崖|岗)$/;
+const MT_SUF_SC=/(?:湖|海|岛|滩|湾|峡|谷|瀑|林)$/;
+const MT_ADMIN_SUF=/(?:市|县|区|镇|乡|旗|盟|州)$/;
+function geoRank(x){
+  const t=String(x&&x.type||''),nm=String(x&&x.name||'');
+  if(t){
+    if(t.indexOf('山岳')>=0)return 0;
+    if(t.indexOf('风景名胜')>=0||t.indexOf('体育休闲')>=0||t.indexOf('户外')>=0||t==='scenic'||t==='landmark')return 1;
+    if(t.indexOf('行政')>=0||t.indexOf('区划')>=0||t.indexOf('地名')>=0||t==='city'||t==='area')return 3;
+    return 2;
+  }
+  if(MT_SUF_MT.test(nm))return 0;
+  if(MT_SUF_SC.test(nm))return 1;
+  if(MT_ADMIN_SUF.test(nm))return 3;
+  return 2;
+}
+// 稳定排序：按 geoRank 差值，同分级保持原顺序（V8 sort 稳定）
+function rankSearchCandidates(arr){
+  if(!Array.isArray(arr)||arr.length<2)return arr;
+  return arr.sort(function(a,b){return geoRank(a)-geoRank(b);});
+}
+
 // Province → capital city mapping for region-level searches
 const PROVINCE_CAPITALS={
   北京:'北京',天津:'天津',上海:'上海',重庆:'重庆',
@@ -1780,7 +1813,7 @@ async function qweatherGeo(name){
     var j=await qwFetch('/geo/v2/city/lookup',{location:name,number:8},2500);
     return (j.location||[]).filter(function(x){return x&&x.name;}).map(function(x){
       var lat=parseFloat(x.lat),lng=parseFloat(x.lon);
-      return {name:x.name,admin1:String(x.admin1||''),country:'CN',lat:lat,lng:lng,ele:0,src:'和风'};
+      return {name:x.name,admin1:String(x.admin1||''),country:'CN',lat:lat,lng:lng,ele:0,src:'和风',type:String(x.type||'')};
     }).filter(function(x){return !isNaN(x.lat)&&!isNaN(x.lng);});
   }catch(e){return [];}
 }
@@ -2437,7 +2470,7 @@ const App={
     var local=fuzzyMatchCities(q);
     if(local.length){
       if(seq!==this._suggestSeq)return;
-      this.showCityDropdown(local.slice(0,8));
+      this.showCityDropdown(rankSearchCandidates(local).slice(0,8));
     }else{
       dd.innerHTML='<div class="srd-item srd-loading" style="cursor:default;opacity:.55;">⏳ 搜索中...</div>';
       dd.classList.add('open');
@@ -2459,7 +2492,8 @@ const App={
             return{name:Array.isArray(t.name)?(t.name[0]||''):t.name,
               admin1:district||city,country:'',
               lat:loc&&loc.length>1?parseFloat(loc[1]):null,
-              lng:loc&&loc.length>1?parseFloat(loc[0]):null,ele:0,src:'高德'};
+              lng:loc&&loc.length>1?parseFloat(loc[0]):null,ele:0,src:'高德',
+              type:Array.isArray(t.type)?(t.type[0]||''):String(t.type||'')};
           }).filter(function(x){return x.name&&x.name!==q;});
         })
         .catch(function(){return[];});
@@ -2474,7 +2508,7 @@ const App={
         return hit?Object.assign({},x,{lat:hit.lat,lng:hit.lng,admin1:hit.admin1||x.admin1,source:'nmc-auto'}):x;
       });
       if(seq!==this._suggestSeq)return;
-      this.showCityDropdown(local.slice(0,8));
+      this.showCityDropdown(rankSearchCandidates(local).slice(0,8));
     }
     // 合并网络补全：高德 + 和风 Geo 并存；两者皆空才 Open-Meteo 回退
     var net=amapNet.concat(qwGeo);
@@ -2494,7 +2528,7 @@ const App={
       if(i<0)combined.push(x);
       else if(combined[i].lat==null&&x.lat!=null)combined[i]=x;
     });
-    if(combined.length)this.showCityDropdown(combined.slice(0,8));
+    if(combined.length)this.showCityDropdown(rankSearchCandidates(combined).slice(0,8));
     else{dd.classList.remove('open');dd.innerHTML='';}
   },
   async search(q){
@@ -2637,7 +2671,7 @@ const App={
               return;
             }
           }else{
-            this.showCityDropdown(deduped);
+            this.showCityDropdown(rankSearchCandidates(deduped));
             this.showLoading(false);this.state.loading=false;
             return;
           }
@@ -3461,97 +3495,72 @@ const App={
     if(!_cfg)cfgLoad();
     _gearMode=_cfg.sceneMode==='heavy'?'heavy':'light';
     var cfg=_cfg.modes[_gearMode];
-    var daily=Array.isArray(d.daily)?d.daily:[];
-    var allHours=Array.isArray(d.hourly)?d.hourly:[];
-    var allTemps=allHours.map(function(h){return h.temp;}).filter(function(t){return t!=null;});
-    var minTemp=allTemps.length?Math.min.apply(null,allTemps):10;
-    var maxTemp=allTemps.length?Math.max.apply(null,allTemps):25;
-    var hasRain=daily.some(function(da){return da.precipSum>0;});
-    var maxUVI=daily.reduce(function(m,da){return Math.max(m,da.uviMax||0);},0);
-    // 行程夜间（20:00–04:00）最低温
-    var nightTemps=allHours.filter(function(h){var hh=new Date(h.time).getHours();return hh>=20||hh<=4;}).map(function(h){return h.temp;}).filter(function(t){return t!=null;});
-    var nightMin=nightTemps.length?Math.min.apply(null,nightTemps):minTemp;
-    var hasSnow=daily.some(function(da){return da.snowfallSum>0;})||allHours.some(function(h){return h.snowfall>0;});
     var days=(typeof App.getForecastDays==='function')?App.getForecastDays():3;
-    var season=gearSeason(minTemp);
     var elevation=(App.state&&App.state.elevation)?App.state.elevation:0;
-    var altZone=altitudeZone(elevation);
-    var packL=packLiters(days,season);
+    var env=envScenario(d,elevation,days); // 统一环境信号 + 场景方案
+    var az=altitudeZone(env.elevation);
+    var season=env.season;
+    var packL=packLiters(env.days,season);
     var waterRate=WATER_L_PER_DAY[season];
-    var waterL=Math.round(waterRate*days*2)/2;
-    var mtx=envGearMatrix(altZone.level,nightMin,hasSnow);
-    var ctx={
-      precipProb:daily.reduce(function(m,da){return Math.max(m,da.precipProbMax||0);},0),
-      tempMax:maxTemp,tempMin:minTemp,
-      windSpeed:daily.reduce(function(m,da){return Math.max(m,da.windSpeedMax||0);},0),
-      uvi:maxUVI,
-      humidity:avgOf(allHours.map(function(h){return h.humidity;})),
-      visibility:null,elevation:elevation
-    };
-    // 条件提示条
-    var alerts='';
-    if(hasRain)alerts+='<div class="gear-alert wet">📌 建议携带雨具</div>';
-    else alerts+='<div class="gear-alert" style="background:rgba(22,163,74,.08);border-color:rgba(22,163,74,.15);color:#16a34a;">📌 雨具可备用</div>';
-    if(minTemp<10)alerts+='<div class="gear-alert cold">🥶 气温偏低，注意保暖</div>';
-    if(maxTemp>=30)alerts+='<div class="gear-alert hot">🔥 气温偏高，注意防暑</div>';
+    var waterL=Math.round(waterRate*env.days*2)/2;
     var modeZh=_gearMode==='heavy'?'重装户外':'轻装户外';
-    var html='<div class="gear-meta">📍 '+(d.location?escHtml(d.location.name||''):'')+' · '+elevation+'m · '+altZone.label+' · '+days+'天 · '+modeZh+'模式</div>';
+    var html='<div class="gear-meta">📍 '+(d.location?escHtml(d.location.name||''):'')+' · '+env.elevation+'m · '+(env.zoneLabel||'')+' · '+env.days+'天 · '+modeZh+'模式</div>';
     html+='<div class="gear-mode-toggle">'+
       '<button class="gm'+( _gearMode==='light'?' act':'')+'" onclick="setGearMode(\'light\')">🎒 轻装户外</button>'+
       '<button class="gm'+( _gearMode==='heavy'?' act':'')+'" onclick="setGearMode(\'heavy\')">🎒 重装户外</button></div>';
     html+='<div class="gear-principle">'+( _gearMode==='heavy'?'⚠️ 帐篷只挡风雪不发热；失温第一来源：地面传导→潮气→冷风；装备按夜间最低温配置，不看白天温度':'⚠️ 不留夜，无睡眠系统；防淋雨、防失温、防迷路三件底线不能省')+'</div>';
     // 海拔区间提示（高/超高/极高）
-    if(altZone.level==='高'||altZone.level==='超高'||altZone.level==='极高'){
-      html+='<div class="gear-alert'+(altZone.level==='极高'?' cold':'')+'" style="background:rgba(249,115,22,.08);border-color:rgba(249,115,22,.25);color:#c2410c;">🏔 '+altZone.advice+'</div>';
+    if(env.zone==='高'||env.zone==='超高'||env.zone==='极高'){
+      html+='<div class="gear-alert'+(env.zone==='极高'?' cold':'')+'" style="background:rgba(249,115,22,.08);border-color:rgba(249,115,22,.25);color:#c2410c;">🏔 '+az.advice+'</div>';
     }
-    // 轻装场景速调
-    if(_gearMode==='light'){
-      var speed=[];
-      if(maxTemp>=30)speed.push('夏季高温：重点增加水量（取 2.5L），薄羽绒马甲保留');
-      if(minTemp<10||elevation>=1500)speed.push('秋冬/高海拔：加厚保暖层，优先保温水壶');
-      if(speed.length)html+='<div class="gear-alert" style="background:rgba(37,99,235,.06);border-color:rgba(37,99,235,.2);color:#2563eb;">📊 场景速调：'+speed.join('；')+'</div>';
-    }
-    // 环境方案块（海拔×夜间温矩阵驱动）
-    if(mtx){
-      if(mtx.professional){
-        html+='<div class="gear-kit" style="border-color:rgba(220,38,38,.3);background:rgba(220,38,38,.06);"><div class="kit-title">🚫 '+mtx.zoneLabel+' · '+mtx.scenario+'</div><div class="kit-line">专业登山范畴（>5500m），不适合普通爱好者，不列装备清单</div></div>';
+    // 环境方案块（海拔×夜间温场景驱动，唯一场景来源）
+    if(env.scenario){
+      if(env.professional){
+        html+='<div class="gear-kit" style="border-color:rgba(220,38,38,.3);background:rgba(220,38,38,.06);"><div class="kit-title">🚫 '+env.zoneLabel+' · '+env.scenario+'</div><div class="kit-line">专业登山范畴（>5500m），不适合普通爱好者，不列装备清单</div></div>';
       }else{
-        html+='<div class="gear-kit"><div class="kit-title">🎯 '+mtx.zoneLabel+' · '+mtx.scenario+'（夜间 '+mtx.tempLabel+'）</div>'+
-          (_gearMode==='heavy'?'<div class="kit-line">⛺ '+mtx.camping.tent+' ｜ 🧱 '+mtx.camping.pad+' ｜ 🛏 '+mtx.camping.bag+'</div>':'')+
-          (_gearMode==='heavy'&&mtx.camping.note?'<div class="kit-line">📌 '+mtx.camping.note+'</div>':'')+
-          '<div class="kit-line">🥾 单日：'+mtx.dayHike.advice+'</div></div>';
+        html+='<div class="gear-kit"><div class="kit-title">🎯 '+env.zoneLabel+' · '+env.scenario+'（夜间 '+env.tempLabel+'）</div>'+
+          (_gearMode==='heavy'?'<div class="kit-line">⛺ '+env.camping.tent+' ｜ 🧱 '+env.camping.pad+' ｜ 🛏 '+env.camping.bag+'</div>':'')+
+          (_gearMode==='heavy'&&env.camping.note?'<div class="kit-line">📌 '+env.camping.note+'</div>':'')+
+          '<div class="kit-line">🥾 单日：'+env.dayHike.advice+'</div></div>';
       }
     }
     // 环境前置规则与核心红线
     html+='<details class="gear-rules"><summary>📋 环境前置规则与核心红线</summary><div class="gr-body">'+ENV_RULES.concat(ENV_REDLINES).map(function(r){return '<div class="gr-item">'+r+'</div>';}).join('')+'</div></details>';
-    html+=alerts;
+    // 数据驱动提示条
+    html+=genAlerts(env).map(function(a){
+      if(a.cls==='wet')return '<div class="gear-alert wet">'+a.txt+'</div>';
+      if(a.cls==='dry')return '<div class="gear-alert" style="background:rgba(22,163,74,.08);border-color:rgba(22,163,74,.15);color:#16a34a;">'+a.txt+'</div>';
+      if(a.cls==='cold')return '<div class="gear-alert cold">'+a.txt+'</div>';
+      if(a.cls==='hot')return '<div class="gear-alert hot">'+a.txt+'</div>';
+      return '<div class="gear-alert" style="background:rgba(37,99,235,.06);border-color:rgba(37,99,235,.2);color:#2563eb;">'+a.txt+'</div>';
+    }).join('');
     // 9 大类渲染
     var catCls='';
     cfg.categories.forEach(function(cat,idx){
       catCls+='<div class="ec'+(idx===0?' open':'')+'"><div class="ech">'+escHtml(cat.label)+'<span class="ar">▾</span></div><div class="ecb">';
-      if(cat.label.indexOf('睡眠')>=0&&mtx&&mtx.camping){
-        catCls+='<div class="ei dyn"><span>⛺ 帐篷：'+escHtml(mtx.camping.tent)+'</span></div>';
-        catCls+='<div class="ei dyn"><span>🧱 防潮垫：'+escHtml(mtx.camping.pad)+'</span></div>';
-        catCls+='<div class="ei dyn"><span>🛏 睡袋：'+escHtml(mtx.camping.bag)+'</span></div>';
+      if(cat.label.indexOf('睡眠')>=0&&env.camping){
+        catCls+='<div class="ei dyn"><span>⛺ 帐篷：'+escHtml(env.camping.tent)+'</span></div>';
+        catCls+='<div class="ei dyn"><span>🧱 防潮垫：'+escHtml(env.camping.pad)+'</span></div>';
+        catCls+='<div class="ei dyn"><span>🛏 睡袋：'+escHtml(env.camping.bag)+'</span></div>';
       }
       (cat.items||[]).forEach(function(it){
-        var condMet=cfgEvalCond(it.condition,ctx);
-        var hlMet=cfgEvalCond(it.highlightOn,ctx);
-        var checked=(it.mandatory||condMet)?' checked':'';
+        var whenMet=Array.isArray(it.when)?evalTrigger(it.when,env):false;
+        var hlMet=Array.isArray(it.hint)?evalTrigger(it.hint,env):false;
+        var checked=(it.mandatory||whenMet)?' checked':'';
         var tz=(it.tier||'upgrade');
         var tierB='<span class="tb tb-'+((tz==='base')?'base':(tz==='cold'?'cold':'up'))+'">'+tierZh(tz)+'</span>';
         var suffix='';
-        if(it.id==='pack')suffix=' <span class="dyn-suffix">（'+days+'天 · '+(season==='winter'?'冬':'夏')+' → 建议 '+packL+'L 背包）</span>';
-        if(it.id==='water')suffix=' <span class="dyn-suffix">（'+waterRate+'L/天 × '+days+'天 ≈ '+waterL+'L）</span>';
+        if(it.id==='pack')suffix=' <span class="dyn-suffix">（'+env.days+'天 · '+(season==='winter'?'冬':'夏')+' → 建议 '+packL+'L 背包）</span>';
+        if(it.id==='water')suffix=' <span class="dyn-suffix">（'+waterRate+'L/天 × '+env.days+'天 ≈ '+waterL+'L）</span>';
         if(it.id==='l-water')suffix=' <span class="dyn-suffix">（'+(season==='winter'?'1.5L':'1.5~2.5L（高温取上限）')+'）</span>';
         catCls+='<div class="ei"><input type="checkbox"'+checked+'><span>'+escHtml(it.name)+suffix+tierB
-          +(hlMet?' <span class="ht">⚡ '+cfgCondLabel(it.highlightOn)+'</span>':'')
-          +(condMet&&!it.mandatory?' <span class="cic">'+cfgCondLabel(it.condition)+'</span>':'')
+          +(hlMet?' <span class="ht">⚡ '+cfgRuleLabel(it.hint)+'</span>':'')
+          +(whenMet&&!it.mandatory?' <span class="cic">'+cfgRuleLabel(it.when)+'</span>':'')
           +'</span></div>';
       });
       catCls+='</div></div>';
     });
-    if(mtx&&mtx.professional){
+    if(env.professional){
       html+='<div class="gear-alert cold" style="margin-top:10px;">🚫 极高海拔（>5500m）属专业登山范畴，不适合普通爱好者，此处不列装备清单。</div>';
     }else{
       html+='<div class="gear-grid">'+catCls+'</div>';
@@ -4497,8 +4506,42 @@ var ENV_REDLINES=[
   '🥾 单日徒步万能底线：速干 + 防雨外壳 + 薄羽绒马甲 + 头灯 + 急救保温毯',
   '❄️ 海拔 >2500m 过夜：装备预留 5°C 以上冗余，不要卡温标极限',
 ];
-// 环境装备分级矩阵：海拔区间 × 夜间最低温 → 单日轻装 / 多日露营方案
-function envGearMatrix(zone,nightMin,hasSnow){
+// 统一环境触发体系：一次计算全部环境信号 + 命中场景方案（替代旧 envGearMatrix 与散落的 ctx/硬编码提示）
+function envScenario(d,elevation,days){
+  var daily=Array.isArray(d&&d.daily)?d.daily:[];
+  var allHours=Array.isArray(d&&d.hourly)?d.hourly:[];
+  var allTemps=allHours.map(function(h){return h.temp;}).filter(function(t){return t!=null;});
+  var tripMin=allTemps.length?Math.min.apply(null,allTemps):10;
+  var tripMax=allTemps.length?Math.max.apply(null,allTemps):25;
+  // 行程夜间（20:00–04:00）最低温
+  var nightTemps=allHours.filter(function(h){var hh=new Date(h.time).getHours();return hh>=20||hh<=4;}).map(function(h){return h.temp;}).filter(function(t){return t!=null;});
+  var nightMin=nightTemps.length?Math.min.apply(null,nightTemps):tripMin;
+  var elev=(elevation!=null&&!isNaN(elevation))?elevation:0;
+  var zone=altitudeZone(elev);
+  var hasSnow=daily.some(function(da){return da.snowfallSum>0;})||allHours.some(function(h){return h.snowfall>0;});
+  var plan=envScenarioPlan(zone.level,nightMin,hasSnow);
+  var sig={
+    zone:zone.level,elevation:elev,nightMin:nightMin,tripMin:tripMin,tripMax:tripMax,
+    tempTier:nightMin>=15?'暖':nightMin>=10?'凉':nightMin>=5?'爽':nightMin>=0?'冷':nightMin>=-5?'严寒':'极寒',
+    season:(tripMin<15)?'winter':'summer',
+    scenario:plan?plan.scenario:null,
+    rain:daily.some(function(da){return da.precipSum>0;}),
+    heavyRain:daily.some(function(da){return (da.precipSum||0)>=10;}),
+    snow:hasSnow,
+    windSpeed:daily.reduce(function(m,da){return Math.max(m,da.windSpeedMax||0);},0),
+    wind:'',
+    uvi:daily.reduce(function(m,da){return Math.max(m,da.uviMax||0);},0),
+    uv:'',
+    humidity:avgOf(allHours.map(function(h){return h.humidity;})),
+    precipProb:daily.reduce(function(m,da){return Math.max(m,da.precipProbMax||0);},0),
+    days:days
+  };
+  sig.wind=sig.windSpeed>=40?'强风':sig.windSpeed>=20?'大风':'轻风';
+  sig.uv=sig.uvi>=6?'高':'低';
+  return Object.assign(sig,plan||{});
+}
+// 环境装备分级矩阵（唯一场景来源）：海拔区间 × 夜间最低温 → 单日轻装 / 多日露营方案
+function envScenarioPlan(zone,nightMin,hasSnow){
   var n=(nightMin==null)?10:nightMin, snow=!!hasSnow;
   if(zone==='低'){
     if(n>15)return {zoneLabel:'低海拔',tempLabel:'>15°C',scenario:'盛夏',camping:{tent:'轻量三季帐',pad:'R2.2~2.7 蛋巢',bag:'舒适 15°C 夏款羽绒睡袋',note:'微型气炉+钛杯，可选冷食减负'},dayHike:{advice:'速干衣裤/徒步鞋/遮阳帽；备用雨披+薄羽绒马甲+干袜；水 1.8–2.5L，冷食不带炉具'}};
@@ -4526,7 +4569,6 @@ var PACK_L_BY_DAYS=[[1,30,35],[2,40,50],[3,50,55],[4,60,65],[5,70,75]]; // [天�
 var WATER_L_PER_DAY={summer:1.5,winter:1.0};                   // 饮用水 L/天（夏/冬）
 
 // 季节判定：行程最低温 <15°C → 冬（影响背包容量与饮用水标准）
-function gearSeason(tripMin){ return (tripMin!=null&&tripMin<15)?'winter':'summer'; }
 // 背包容量：按天数+季节
 function packLiters(days,season){
   var row=PACK_L_BY_DAYS[PACK_L_BY_DAYS.length-1];
@@ -4535,94 +4577,18 @@ function packLiters(days,season){
   }
   return season==='winter'?row[2]:row[1];
 }
-// 配置迁移辅助：旧分类/装备项 → 新 9 大类类目关键词
-function foldClass(s){
-  if(/帐篷|睡袋|防潮|蛋巢|充气|枕|内胆/.test(s))return '睡眠系统';
-  if(/炉|炊|锅|餐具|气罐|柴炉|保温壶/.test(s))return '户外炊具';
-  if(/背包|防雨罩|背负|防水袋/.test(s))return '背负系统';
-  if(/净水|水袋|水桶|滤水|水具/.test(s))return '净水系统';
-  if(/衣|裤|袜|鞋|冲锋|雨衣|羽绒|冰爪|雪镜|手套|帽/.test(s))return '着装系统';
-  if(/地图|充电宝|手机|轨迹|卫星|对讲/.test(s))return '导航通讯';
-  if(/急救|药|防晒|驱|湿巾|血氧|保温毯|蛇粉/.test(s))return '卫生应急';
-  if(/头灯|哨|刀|火种|修补|登山杖|攀登|头盔|绳索/.test(s))return '安全修理';
-  if(/食|餐|能量|干粮|水|垃圾/.test(s))return '食物饮食';
-  return null;
-}
-// 轻装旧配置迁移：旧 6 类项 → 单日轻装 5 模块关键词
-function foldLightClass(s){
-  if(/速干|衣裤|徒步鞋|跑鞋|羊毛袜|遮阳帽|太阳镜|雨披|硬壳|羽绒马甲|干袜|头巾|手套|保暖/.test(s))return '穿戴';
-  if(/背包|防雨罩|收纳/.test(s))return '背负';
-  if(/水|路餐|净水|垃圾/.test(s))return '饮水与食物';
-  if(/头灯|充电宝|手机|急救|保温毯|防晒|润唇膏|哨|刀/.test(s))return '安全保命套装';
-  if(/纸巾|钥匙|现金|证件/.test(s))return '小件杂物';
-  return null;
-}
-// 配置迁移：旧格式（无 modes）→ 按分类名推断模式并折叠旧场景装备项进 9 大类（保留属性）
-// 睡眠系统垫子项迁移：旧通用「防潮垫（R 值按夜间温度）」→ 充气垫 + 蛋巢垫 两个独立装备（2 选 1 或都选，幂等）
-function migrateSleepPads(cfg){
-  if(!cfg||!cfg.modes||!cfg.modes.heavy||!cfg.modes.heavy.categories)return;
-  var cats=cfg.modes.heavy.categories,sleep=null;
-  for(var i=0;i<cats.length;i++){if(cats[i].label.indexOf('睡眠')>=0){sleep=cats[i];break;}}
-  if(!sleep)return;
-  var items=sleep.items||(sleep.items=[]);
-  var hasAir=items.some(function(it){return it.id==='airpad'||(it.name||'').indexOf('充气垫')>=0;});
-  var hasEgg=items.some(function(it){return it.id==='eggpad'||(it.name||'').indexOf('蛋巢垫')>=0;});
-  if(hasAir&&hasEgg)return; // 已迁移
-  var padIdx=-1;
-  for(var j=items.length-1;j>=0;j--){
-    var it=items[j];
-    if(it.id==='pad'||(it.name||'')==='防潮垫（R 值按夜间温度）'){padIdx=j;items.splice(j,1);}
-  }
-  var def=loadGearDefaults('heavy').categories,defSleep=null;
-  for(var k=0;k<def.length;k++){if(def[k].label.indexOf('睡眠')>=0){defSleep=def[k];break;}}
-  if(!defSleep)return;
-  var insAt=(padIdx>=0)?Math.min(padIdx,items.length):Math.min(items.length,2);
-  var add=[];
-  defSleep.items.forEach(function(dit){
-    if(dit.id==='airpad'&&!hasAir)add.push({id:dit.id,name:dit.name,mandatory:dit.mandatory,tier:dit.tier});
-    if(dit.id==='eggpad'&&!hasEgg)add.push({id:dit.id,name:dit.name,mandatory:dit.mandatory,tier:dit.tier});
-  });
-  if(add.length){var args=[insAt,0];args.push.apply(args,add);Array.prototype.splice.apply(items,args);}
-}
-
-function cfgSanitize(cfg){
+// v2 配置校验/归一：旧格式（无 version:2）由 cfgLoad 整体重置为新默认，不做逐项迁移
+function cfgSanitizeV2(cfg){
   if(!cfg)return null;
-  if(cfg.modes&&cfg.modes.heavy&&cfg.modes.light){
-    // 已是新格式
-    migrateSleepPads(cfg);
-  }else if(Array.isArray(cfg.categories)){
-    // 旧格式迁移
-    var names=(cfg.categories||[]).map(function(c){return c.label||'';}).join(' ');
-    var mode=/帐篷|睡袋|露营|登山|炊具|炉头/.test(names)?'heavy':'light';
-    var heavy=loadGearDefaults('heavy'),light=loadGearDefaults('light');
-    var target=(mode==='heavy'?heavy:light).categories;
-    (cfg.categories||[]).forEach(function(cat){
-      (cat.items||[]).forEach(function(it){
-        if(!it||!it.name)return;
-        var cls=(mode==='heavy'?foldClass:foldLightClass)(cat.label+' '+it.name);
-        if(!cls)return;
-        var dest=null;
-        for(var i=0;i<target.length;i++){if(target[i].label.indexOf(cls)>=0){dest=target[i];break;}}
-        if(!dest)return;
-        dest.items.push({
-          id:it.id||it.name.replace(/[^a-zA-Z0-9一-鿿]/g,'-').toLowerCase().slice(0,30),
-          name:it.name,mandatory:!!it.mandatory,condition:it.condition||null,
-          highlightOn:it.highlightOn||null,tier:it.tier||(it.mandatory?'base':'upgrade'),
-          protected:!!(it.protected||dest.label.indexOf('安全保命套装')>=0)
-        });
-      });
-    });
-    cfg.modes={heavy:heavy,light:light};
-    cfg.sceneMode=mode;
-    cfg.tripDays=(typeof cfg.tripDays==='number'&&cfg.tripDays>0)?cfg.tripDays:3;
-  }else{return null;}
+  if(cfg.version!==2||!cfg.modes||!cfg.modes.heavy||!cfg.modes.light||!Array.isArray(cfg.modes.heavy.categories)||!Array.isArray(cfg.modes.light.categories))return null;
   ['heavy','light'].forEach(function(m){
     (cfg.modes[m].categories||[]).forEach(function(c){
       if(!Array.isArray(c.items))c.items=[];
       if(!c.label)c.label='未命名分类';
     });
   });
-  cfg.categories=cfg.modes[cfg.sceneMode==='heavy'?'heavy':'light'].categories;
+  cfg.sceneMode=cfg.sceneMode==='heavy'?'heavy':'light';
+  cfg.categories=cfg.modes[cfg.sceneMode].categories;
   return cfg;
 }
 // 模式切换：保存当前模式 categories → 切模式 → 渲染
@@ -4648,21 +4614,21 @@ function loadGearDefaults(mode){
       {id:'utensil',name:'折叠餐具',mandatory:true,tier:'base'},
       {id:'windscreen',name:'挡风板',mandatory:true,tier:'base'},
       {id:'firekit',name:'打火石 + 备用打火机',mandatory:true,tier:'base'},
-      {id:'thermos',name:'保温壶',tier:'upgrade',highlightOn:{field:'tempMin',operator:'<',value:5,label:'低温储热水'}},
-      {id:'coldstove',name:'柴炉/酒精炉（低温备用）',condition:{field:'tempMin',operator:'<',value:0,label:'低温气炉火力弱'},tier:'cold'},
+      {id:'thermos',name:'保温壶',tier:'upgrade',hint:[[['tripMin','<',5]]]},
+      {id:'coldstove',name:'柴炉/酒精炉（低温备用）',when:[[['tripMin','<',0]]],tier:'cold'},
     ]},
     {label:'🛏 睡眠系统', items:[
       {id:'tent',name:'帐篷（三季/四季按夜间温度）',mandatory:true,tier:'base'},
       {id:'groundsheet',name:'地布（必须，防磨底+隔湿气）',mandatory:true,tier:'base'},
       {id:'airpad',name:'充气垫（R 值按夜间温度）',mandatory:true,tier:'base'},
-      {id:'eggpad',name:'蛋巢垫（R 值等效，可叠加增R）',tier:'upgrade'},
+      {id:'eggpad',name:'蛋巢垫（R 值等效，可叠加增R）',tier:'upgrade',hint:[[['nightMin','<',3]]]},
       {id:'bag',name:'睡袋（按舒适温标）',mandatory:true,tier:'base'},
       {id:'pillow',name:'充气枕/折叠枕',tier:'base'},
       {id:'drybag',name:'防水收纳袋（睡袋/衣物分装防露水）',mandatory:true,tier:'base'},
-      {id:'sleepline',name:'睡袋内胆（增温 3~5°C）',tier:'upgrade',highlightOn:{field:'tempMin',operator:'<',value:10,label:'低温内胆'}},
+      {id:'sleepline',name:'睡袋内胆（增温 3~5°C）',tier:'upgrade',hint:[[['tripMin','<',10]]]},
       {id:'tentlight',name:'帐内小灯',tier:'upgrade'},
-      {id:'snowskirt',name:'雪裙（四季帐标配）',condition:{field:'tempMin',operator:'<',value:0,label:'低温/降雪'},tier:'cold'},
-      {id:'tentpatch',name:'帐篷修补包/帐绳地钉备用',condition:{field:'tempMin',operator:'<',value:0,label:'低温'},tier:'cold'},
+      {id:'snowskirt',name:'雪裙（四季帐标配）',when:[[['nightMin','<',0]],[['snow','==',true]]],tier:'cold'},
+      {id:'tentpatch',name:'帐篷修补包/帐绳地钉备用',when:[[['tripMin','<',0]]],tier:'cold'},
     ]},
     {label:'🎒 背负系统', items:[
       {id:'pack',name:'背包（容量按天数+季节）',mandatory:true,tier:'base'},
@@ -4674,7 +4640,7 @@ function loadGearDefaults(mode){
     {label:'💧 净水系统', items:[
       {id:'waterbag',name:'储水袋/折叠水桶',mandatory:true,tier:'base'},
       {id:'purifier',name:'净水片/滤水器',mandatory:true,tier:'base'},
-      {id:'winterwater',name:'夜间水罐进帐篷防结冰',condition:{field:'tempMin',operator:'<',value:0,label:'低温'},tier:'cold'},
+      {id:'winterwater',name:'夜间水罐进帐篷防结冰',when:[[['nightMin','<',0]]],tier:'cold'},
     ]},
     {label:'🧥 着装系统', items:[
       {id:'baselayer',name:'排汗层（禁纯棉，美利奴/速干）',mandatory:true,tier:'base'},
@@ -4685,9 +4651,9 @@ function loadGearDefaults(mode){
       {id:'gloves',name:'手套（触屏/加厚防水）',mandatory:true,tier:'base'},
       {id:'socks',name:'2 双美利奴羊毛袜 + 干睡袜',mandatory:true,tier:'base'},
       {id:'shoes',name:'徒步鞋 + 营地鞋',mandatory:true,tier:'base'},
-      {id:'downcoat',name:'长款羽绒外套 + 羽绒裤',condition:{field:'tempMin',operator:'<',value:0,label:'低温'},tier:'cold'},
-      {id:'wintergloves',name:'加厚防水手套',condition:{field:'tempMin',operator:'<',value:0,label:'低温'},tier:'cold'},
-      {id:'crampons',name:'冰爪/雪镜',condition:{field:'elevation',operator:'>=',value:2500,label:'高海拔'},tier:'cold'},
+      {id:'downcoat',name:'长款羽绒外套 + 羽绒裤',when:[[['tripMin','<',0]]],tier:'cold'},
+      {id:'wintergloves',name:'加厚防水手套',when:[[['tripMin','<',0]]],tier:'cold'},
+      {id:'crampons',name:'冰爪/雪镜',when:[[['zone','>=','高']]],tier:'cold'},
     ]},
     {label:'🧭 导航通讯', items:[
       {id:'offmap',name:'手机 + 离线等高线地图',mandatory:true,tier:'base'},
@@ -4700,16 +4666,16 @@ function loadGearDefaults(mode){
       {id:'firstaid',name:'标准化急救包',mandatory:true,tier:'base'},
       {id:'emergblanket',name:'应急保温毯（失温急救核心）',mandatory:true,tier:'base'},
       {id:'sunglasses',name:'太阳镜/遮阳帽',mandatory:true,tier:'base'},
-      {id:'sunscreen',name:'防晒霜',mandatory:true,highlightOn:{field:'uvi',operator:'>=',value:7,label:'UV强·必用'},tier:'base'},
-      {id:'repellent',name:'驱蚊液/蛇粉（南方山野）',tier:'upgrade'},
-      {id:'altitude',name:'血氧仪/高原反应药',condition:{field:'elevation',operator:'>=',value:2500,label:'高海拔'},tier:'cold'},
+      {id:'sunscreen',name:'防晒霜',mandatory:true,hint:[[['uv','>=','高']]],tier:'base'},
+      {id:'repellent',name:'驱蚊液/蛇粉（南方山野）',when:[[['tripMin','>=',15]]],tier:'upgrade'},
+      {id:'altitude',name:'血氧仪/高原反应药',when:[[['zone','>=','高']]],tier:'cold'},
     ]},
     {label:'🛠 安全修理', items:[
       {id:'headlamp',name:'头灯 + 备用电池',mandatory:true,tier:'base'},
       {id:'whistle',name:'哨子（求救信号）',mandatory:true,tier:'base'},
       {id:'multitool',name:'多功能工具刀',mandatory:true,tier:'base'},
       {id:'fireset',name:'火种两套（打火机+防水打火石）',mandatory:true,tier:'base'},
-      {id:'trekkingpole',name:'登山杖',condition:{field:'precipProb',operator:'>=',value:40,label:'有雨防滑'},tier:'base'},
+      {id:'trekkingpole',name:'登山杖',when:[[['rain','==',true]],[['precipProb','>=',40]]],tier:'base'},
       {id:'patchkit',name:'针线包/充气垫修补胶/帐篷胶带',tier:'upgrade'},
       {id:'climbing',name:'攀登装备（头盔/安全带/主锁/绳索）',tier:'upgrade'},
       {id:'hypothermia',name:'失温认知：发抖/意识迟钝立即升温；严禁帐内炉具炭火',tier:'cold'},
@@ -4719,8 +4685,8 @@ function loadGearDefaults(mode){
       {id:'snack',name:'高热量（坚果/巧克力/能量棒）',mandatory:true,tier:'base'},
       {id:'water',name:'饮用水（夏 1.5L/冬 1L 每天）',mandatory:true,tier:'base'},
       {id:'trashbag',name:'垃圾袋（无痕露营）',mandatory:true,tier:'base'},
-      {id:'cup',name:'保温杯',tier:'upgrade'},
-      {id:'nightfood',name:'睡前高热量/不空腹睡觉',condition:{field:'tempMin',operator:'<',value:0,label:'低温'},tier:'cold'},
+      {id:'cup',name:'保温杯',tier:'upgrade',hint:[[['tripMin','<',10]]]},
+      {id:'nightfood',name:'睡前高热量/不空腹睡觉',when:[[['nightMin','<',0]]],tier:'cold'},
     ]},
   ];}
   function light(){ return [
@@ -4738,20 +4704,21 @@ function loadGearDefaults(mode){
       {id:'l-vest',name:'薄羽绒马甲',mandatory:true,tier:'base'},
       {id:'l-drysock',name:'备用干袜',mandatory:true,tier:'base'},
       {id:'l-buff',name:'魔术头巾',tier:'upgrade'},
-      {id:'l-thin-glove',name:'薄手套',tier:'upgrade'},
+      {id:'l-thin-glove',name:'薄手套',tier:'upgrade',hint:[[['tempTier','>=','凉']]]},
     ]},
     {label:'💧 饮水与食物', items:[
       {id:'l-water',name:'饮用水（1.5~2.5L，按气温与路线水源调整）',mandatory:true,tier:'base',protected:true},
       {id:'l-snack',name:'高热量路餐',mandatory:true,tier:'base'},
       {id:'l-trash',name:'垃圾袋',mandatory:true,tier:'base'},
       {id:'l-puri',name:'净水片（沿途补水减负）',tier:'upgrade'},
+      {id:'l-heavy-warm',name:'加厚保暖层/保温水壶',when:[[['tripMin','<',10]]],tier:'upgrade'},
     ]},
     {label:'🛡 安全保命套装【禁止删减】', items:[
       {id:'l-headlamp',name:'头灯 + 备用电池',mandatory:true,tier:'base',protected:true},
       {id:'l-phone',name:'手机（离线等高线地图）+ 充电宝',mandatory:true,tier:'base',protected:true},
       {id:'l-whistle',name:'求生哨 + 迷你小刀',mandatory:true,tier:'base',protected:true},
       {id:'l-firstaid',name:'精简急救包（敷料/药品/应急保温毯）',mandatory:true,tier:'base',protected:true},
-      {id:'l-sunscreen',name:'防晒霜 + 润唇膏',mandatory:true,tier:'base',protected:true},
+      {id:'l-sunscreen',name:'防晒霜 + 润唇膏',mandatory:true,tier:'base',protected:true,hint:[[['uv','>=','高']]]},
     ]},
     {label:'🧺 小件杂物', items:[
       {id:'l-tissue',name:'纸巾',tier:'base'},
@@ -4765,20 +4732,67 @@ function loadGearDefaults(mode){
 function escHtml(s){
   return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-function cfgEvalCond(c,ctx){
-  if(!c||!c.field)return false;
-  var val=ctx[c.field];
+// ===== 统一触发引擎：装备项 when/hint 规则对信号集求值（AND 组、组间 OR） =====
+var ENUM_ORDER={zone:{低:0,中:1,高:2,超高:3,极高:4},tempTier:{暖:0,凉:1,爽:2,冷:3,严寒:4,极寒:5},
+  wind:{轻风:0,大风:1,强风:2},uv:{低:0,高:1},season:{summer:0,winter:1},
+  scenario:{盛夏:0,春秋:1,冷夜:2,深山冷夜:3,高原冷夜:4,严冬:5,底线配置:6,专业范畴:7}};
+function condEval(c,sig){
+  if(!c||!Array.isArray(c)||c.length<3)return false;
+  var f=c[0],op=c[1],v=c[2],val=sig[f];
   if(val==null)return false;
-  var n=parseFloat(c.value);
+  // 布尔信号（rain/heavyRain/snow）：仅支持 ==，直接比较
+  if(typeof val==='boolean'||typeof v==='boolean'){
+    if(op!=='==')return false;
+    return val==v;
+  }
+  if(ENUM_ORDER[f]){
+    var a=ENUM_ORDER[f][val],b=ENUM_ORDER[f][v];
+    if(a==null||b==null)return false;
+    switch(op){case '>':return a>b;case '<':return a<b;case '>=':return a>=b;case '<=':return a<=b;case '==':return a===b;}
+    return false;
+  }
+  var n=parseFloat(v);
   if(isNaN(n))return false;
-  switch(c.operator){
-    case '>':return val>n;
-    case '<':return val<n;
-    case '>=':return val>=n;
-    case '<=':return val<=n;
-    case '==':return val==n;
+  switch(op){
+    case '>':return val>n;case '<':return val<n;case '>=':return val>=n;case '<=':return val<=n;case '==':return val==n;
   }
   return false;
+}
+function evalTrigger(rules,sig){
+  if(!Array.isArray(rules)||!rules.length||!sig)return false;
+  for(var g=0;g<rules.length;g++){
+    var group=rules[g];
+    if(!Array.isArray(group)||!group.length)continue;
+    var all=true;
+    for(var i=0;i<group.length;i++){if(!condEval(group[i],sig)){all=false;break;}}
+    if(all)return true;
+  }
+  return false;
+}
+var SIG_LABEL={zone:'海拔',nightMin:'夜间最低温',tripMin:'最低温',tripMax:'最高温',tempTier:'温度档',season:'季节',scenario:'场景',rain:'降水',heavyRain:'强降水',snow:'降雪',wind:'风力',uv:'紫外线',uvi:'UVI',humidity:'湿度',precipProb:'降水概率',elevation:'海拔',windSpeed:'风速',days:'天数'};
+var OP_LABEL={'>':'&gt;','<':'&lt;','>=':'≥','<=':'≤','==':'='};
+function condText(c){
+  var f=c&&c[0],op=c&&c[1],v=c&&c[2];
+  if(!f)return'';
+  if(f==='rain'||f==='heavyRain'||f==='snow')return(v?'有':'无')+(SIG_LABEL[f]||f);
+  return (SIG_LABEL[f]||f)+' '+(OP_LABEL[op]||op)+' '+v;
+}
+function cfgRuleLabel(rules){
+  if(!Array.isArray(rules)||!rules.length)return'';
+  return rules.map(function(g){return (Array.isArray(g)?g:[g]).map(condText).join(' 且 ');}).join(' 或 ');
+}
+// 数据驱动提示条（替代渲染内硬编码提示条与轻装速调）
+function genAlerts(sig){
+  if(!sig)return[];
+  var a=[];
+  if(sig.rain)a.push({cls:'wet',txt:'📌 建议携带雨具'});
+  else a.push({cls:'dry',txt:'📌 雨具可备用'});
+  if(sig.tempTier==='冷'||sig.tempTier==='严寒'||sig.tempTier==='极寒')a.push({cls:'cold',txt:'🥶 气温偏低，注意保暖'});
+  if(sig.tripMax>=30)a.push({cls:'hot',txt:'🔥 气温偏高，注意防暑'});
+  if(sig.wind==='大风'||sig.wind==='强风')a.push({cls:'wind',txt:'💨 '+sig.wind+'：帐钉加固、防横风'});
+  if(sig.uv==='高')a.push({cls:'uv',txt:'🧴 紫外线强，必用防晒'});
+  if(sig.zone==='高'||sig.zone==='超高')a.push({cls:'alt',txt:'🏔 海拔'+sig.zone+'：装备标准上浮一档，注意高反'});
+  return a;
 }
 
 var _cfg=null,_cfgEdit=null;
@@ -4787,15 +4801,18 @@ function cfgLoad(){
   try{
     var raw=localStorage.getItem('weather-equipment-config');
     if(raw){
-      _cfg=cfgSanitize(JSON.parse(raw));
+      _cfg=JSON.parse(raw);
+      if(_cfg&&_cfg.version!==2)_cfg=null; // 旧配置（v1）整体重置为新默认
+      if(_cfg)_cfg=cfgSanitizeV2(_cfg);
       if(!_cfg)throw new Error('bad');
     }
   }catch(e){_cfg=null;}
   if(!_cfg){
     _gearMode='light';
-    _cfg={sceneMode:_gearMode,tripDays:3,
+    _cfg={version:2,sceneMode:_gearMode,tripDays:3,
       modes:{heavy:loadGearDefaults('heavy'),light:loadGearDefaults('light')}};
     _cfg.categories=_cfg.modes[_gearMode].categories;
+    try{localStorage.setItem('weather-equipment-config',JSON.stringify(_cfg));}catch(e){} // 旧配置重置后立即写回
   }
   _gearMode=_cfg.sceneMode==='heavy'?'heavy':'light';
 }
@@ -4901,13 +4918,6 @@ function keysBindFileImport(btnId,fileId,inputId){
 }
 // keysInitEvents 在 DOM ready 时绑定（见文件尾部 readyState 分发）
 
-function cfgCondLabel(c){
-  if(!c)return'';
-  var fm={precipProb:'降水',tempMax:'最高温',tempMin:'最低温',windSpeed:'风速',uvi:'UVI',humidity:'湿度',visibility:'能见度',elevation:'海拔'};
-  var om={'>':'&gt;','<':'&lt;','>=':'\u2265','<=':'\u2264','==':'='};
-  return (fm[c.field]||c.field)+' '+(om[c.operator]||c.operator)+' '+c.value+(c.label?' ('+c.label+')':'');
-}
-
 function cfgRender(){
   if(!_cfg)return;
   var h='<div class="cfg-mode"><span class="cm-label">当前编辑模式</span><select id="cfgModeSelect" onchange="setGearMode(this.value);cfgRender();"><option value="light"'+(_gearMode==='light'?' selected':'')+'>🎎 轻装户外</option><option value="heavy"'+(_gearMode==='heavy'?' selected':'')+'>🎎 重装户外</option></select></div>';
@@ -4919,8 +4929,8 @@ function cfgRender(){
       h+='<div class="cfg-item">';
       h+='<span class="cin">'+it.name+'</span>';
       h+='<span class="cib '+(it.tier||'upgrade')+'">'+tierZh(it.tier||'upgrade')+'</span>';
-      if(it.condition)h+='<span class="cic">'+cfgCondLabel(it.condition)+'</span>';
-      if(it.highlightOn)h+='<span class="cic hl">\ud83d\udfe1 '+cfgCondLabel(it.highlightOn)+'</span>';
+      if(it.when)h+='<span class="cic">'+cfgRuleLabel(it.when)+'</span>';
+      if(it.hint)h+='<span class="cic hl">\ud83d\udfe1 '+cfgRuleLabel(it.hint)+'</span>';
       h+='<button class="btn-sm" onclick="cfgEditItem('+ci+','+ii+')">\u270f</button>';
       h+='<button class="btn-sm del" onclick="cfgDelItem('+ci+','+ii+')">\u2715</button>';
       h+='</div>';
@@ -4938,7 +4948,7 @@ function cfgAddItem(ci){
 function cfgEditItem(ci,ii){
   var it=_cfg.categories[ci].items[ii];
   _cfgEdit={catIdx:ci,itemIdx:ii,isNew:false};
-  cfgShowModal('编辑装备',it.name,it.mandatory,it.condition,it.highlightOn);
+  cfgShowModal('编辑装备',it.name,it.mandatory,it.when,it.hint);
 }
 function cfgDelItem(ci,ii){
   var it=_cfg.categories[ci].items[ii];
@@ -4948,16 +4958,96 @@ function cfgDelItem(ci,ii){
   cfgSave();cfgRender();
 }
 
-function cfgShowModal(title,name,mandatory,cond,hl){
+// ===== 配置编辑器：统一信号集 when/hint 规则构建（AND 组 + 组间 OR） =====
+var SIG_NUM=['nightMin','tripMin','tripMax','elevation','precipProb','windSpeed','uvi','humidity','days'];
+var SIG_BOOL=['rain','heavyRain','snow'];
+var SIG_ENUM={zone:['低','中','高','超高','极高'],tempTier:['暖','凉','爽','冷','严寒','极寒'],season:['summer','winter'],wind:['轻风','大风','强风'],uv:['低','高'],scenario:['盛夏','春秋','冷夜','深山冷夜','高原冷夜','严冬','底线配置','专业范畴']};
+var CFG_OP_SEL=['>','<','>=','<=','=='].map(function(o){return '<option value="'+o+'">'+(o==='>='?'≥':o==='<='?'≤':o)+'</option>';}).join('');
+function cfgSigOptions(f){
+  var groups=[['温度',['nightMin','夜间最低温'],['tripMin','全期最低温'],['tripMax','全期最高温'],['tempTier','温度档']],
+    ['天气',['rain','降水'],['heavyRain','强降水'],['snow','降雪'],['precipProb','降水概率'],['wind','风力档'],['windSpeed','风速'],['uv','紫外线档'],['uvi','UVI'],['humidity','湿度']],
+    ['环境',['zone','海拔区间'],['elevation','海拔'],['season','季节'],['scenario','场景'],['days','天数']]];
+  var h='<option value="">无</option>';
+  groups.forEach(function(g){
+    h+='<optgroup label="'+g[0]+'">';
+    for(var i=1;i<g.length;i++)h+='<option value="'+g[i][0]+'"'+(String(f)===g[i][0]?' selected':'')+'>'+g[i][1]+'</option>';
+    h+='</optgroup>';
+  });
+  return h;
+}
+function cfgCondRow(f,op,v){
+  var isBool=SIG_BOOL.indexOf(f)>=0,isEnum=!!SIG_ENUM[f];
+  var valHtml;
+  if(isBool)valHtml='<select class="cv" data-v><option value="true"'+(v===true||v==='true'?' selected':'')+'>有</option><option value="false"'+(v===false||v==='false'?' selected':'')+'>无</option></select>';
+  else if(isEnum)valHtml='<select class="cv" data-v>'+SIG_ENUM[f].map(function(e){return '<option value="'+e+'"'+(String(v)===e?' selected':'')+'>'+e+'</option>';}).join('')+'</select>';
+  else valHtml='<input type="number" class="cv" data-v value="'+(v==null?'':v)+'" placeholder="值" style="width:60px;">';
+  return '<div class="cond-row">'+
+    '<select class="cf" data-f onchange="cfgRowField(this)">'+cfgSigOptions(f)+'</select>'+
+    '<select class="co" data-o>'+(isBool||isEnum?'<option value="==">=</option>':CFG_OP_SEL)+'</select>'+
+    valHtml+'<button class="btn-sm del" type="button" onclick="this.parentElement.remove()">✕</button></div>';
+}
+function cfgRowField(sel){
+  var row=sel.closest('.cond-row');
+  var f=sel.value;
+  var isBool=SIG_BOOL.indexOf(f)>=0,isEnum=!!SIG_ENUM[f];
+  row.querySelector('.co').innerHTML=(isBool||isEnum)?'<option value="==">=</option>':CFG_OP_SEL;
+  var vEl=row.querySelector('[data-v]');
+  if(!vEl)return;
+  var oldV=vEl.value;
+  if(isBool)vEl.outerHTML='<select class="cv" data-v><option value="true"'+(oldV==='true'?' selected':'')+'>有</option><option value="false"'+(oldV==='false'||oldV===''?' selected':'')+'>无</option></select>';
+  else if(isEnum)vEl.outerHTML='<select class="cv" data-v>'+SIG_ENUM[f].map(function(e){return '<option value="'+e+'"'+(oldV===e?' selected':'')+'>'+e+'</option>';}).join('')+'</select>';
+  else if(vEl.tagName!=='INPUT')vEl.outerHTML='<input type="number" class="cv" data-v value="'+oldV+'" placeholder="值" style="width:60px;">';
+}
+function cfgBuilderHtml(rules){
+  if(!Array.isArray(rules)||!rules.length)rules=[[]];
+  var h='<div class="cfg-builder">';
+  rules.forEach(function(g){
+    h+='<div class="cond-group">';
+    (g&&g.length?g:[null]).forEach(function(c){h+=cfgCondRow(c?c[0]:'',c?c[1]:'>',c?c[2]:'');});
+    h+='<div class="cg-ops"><button type="button" class="cfg-add-sm" onclick="cfgAddCond(this)">＋ 条件(AND)</button>'+
+      '<button type="button" class="cfg-add-sm" onclick="cfgAddGroup(this)">＋ 组(OR)</button></div></div>';
+  });
+  h+='</div>';
+  return h;
+}
+function cfgAddCond(btn){
+  var ops=btn.closest('.cg-ops');
+  var row=document.createElement('div');row.className='cond-row';
+  row.innerHTML=cfgCondRow('','>','');
+  ops.parentElement.insertBefore(row,ops);
+}
+function cfgAddGroup(btn){
+  var g=btn.closest('.cond-group');
+  var ng=document.createElement('div');ng.className='cond-group';
+  ng.innerHTML=cfgCondRow('','>','')+'<div class="cg-ops"><button type="button" class="cfg-add-sm" onclick="cfgAddCond(this)">＋ 条件(AND)</button><button type="button" class="cfg-add-sm" onclick="cfgAddGroup(this)">＋ 组(OR)</button></div>';
+  g.parentElement.insertBefore(ng,g.nextSibling);
+}
+function cfgReadRules(rootId){
+  var root=document.getElementById(rootId);
+  if(!root)return null;
+  var groups=[];
+  root.querySelectorAll('.cond-group').forEach(function(g){
+    var group=[];
+    g.querySelectorAll('.cond-row').forEach(function(row){
+      var f=row.querySelector('.cf').value;
+      if(!f)return;
+      var op=row.querySelector('.co').value;
+      var v=row.querySelector('[data-v]')?row.querySelector('[data-v]').value:'';
+      if(SIG_BOOL.indexOf(f)>=0){group.push([f,op,v==='true']);}
+      else if(SIG_ENUM[f]){if(v!=='')group.push([f,op,v]);}
+      else{if(String(v).trim()!=='')group.push([f,op,parseFloat(v)]);}
+    });
+    if(group.length)groups.push(group);
+  });
+  return groups.length?groups:null;
+}
+
+function cfgShowModal(title,name,mandatory,when,hint){
   document.getElementById('cfgModalTitle').textContent=title;
   document.getElementById('cfgEditName').value=name||'';
   document.getElementById('cfgEditMandatory').value=mandatory?'true':'false';
-  document.getElementById('cfgEditCondField').value=cond?cond.field:'';
-  document.getElementById('cfgEditCondOp').value=cond?cond.operator:'>';
-  document.getElementById('cfgEditCondValue').value=cond?cond.value:'';
-  document.getElementById('cfgEditHlField').value=hl?hl.field:'';
-  document.getElementById('cfgEditHlOp').value=hl?hl.operator:'>';
-  document.getElementById('cfgEditHlValue').value=hl?hl.value:'';
+  document.getElementById('cfgWhenBuilder').innerHTML=cfgBuilderHtml(when);
+  document.getElementById('cfgHintBuilder').innerHTML=cfgBuilderHtml(hint);
   document.getElementById('cfgEditModal').classList.remove('hidden');
 }
 function cfgHideModal(){
@@ -4995,7 +5085,7 @@ function cfgInitEvents(){
     var r=new FileReader();
     r.onload=function(ev){
       try{
-        var imp=cfgSanitize(JSON.parse(ev.target.result));
+        var imp=cfgSanitizeV2(JSON.parse(ev.target.result));
         if(!imp){cfgAlert('error','格式错误：缺少 categories');return;}
         var total=imp.categories.reduce(function(s,c){return s+c.items.length;},0);
         if(!confirm('导入「'+(imp.profileName||'配置')+'」（'+total+'件）？'))return;
@@ -5023,15 +5113,9 @@ function cfgModalSaveHandler(){
   var name=document.getElementById('cfgEditName').value.trim();
   if(!name){cfgAlert('error','请输入名称');return;}
   var mandatory=document.getElementById('cfgEditMandatory').value==='true';
-  var cf=document.getElementById('cfgEditCondField').value;
-  var co=document.getElementById('cfgEditCondOp').value;
-  var cv=document.getElementById('cfgEditCondValue').value;
-  var condition=cf&&cv!==''?{field:cf,operator:co,value:parseFloat(cv)}:null;
-  var hf=document.getElementById('cfgEditHlField').value;
-  var ho=document.getElementById('cfgEditHlOp').value;
-  var hv=document.getElementById('cfgEditHlValue').value;
-  var hl=hf&&hv!==''?{field:hf,operator:ho,value:parseFloat(hv),label:hf==='precipProb'?'降水':hf==='uvi'?'UVI偏高':hf==='tempMax'?'高温':hf==='tempMin'?'低温':hf==='windSpeed'?'强风':hf==='humidity'?'潮湿':''}:null;
-  var item={id:name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g,'-').toLowerCase().slice(0,30),name:name,mandatory:mandatory,enabled:true,condition:condition,highlightOn:hl,tier:mandatory?'base':'upgrade'};
+  var when=cfgReadRules('cfgWhenBuilder');
+  var hint=cfgReadRules('cfgHintBuilder');
+  var item={id:name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g,'-').toLowerCase().slice(0,30),name:name,mandatory:mandatory,enabled:true,when:when,hint:hint,tier:mandatory?'base':'upgrade'};
   if(_cfgEdit.isNew){
     item.category=(_cfg.categories[_cfgEdit.catIdx].id||'cat'+_cfgEdit.catIdx);
     _cfg.categories[_cfgEdit.catIdx].items.push(item);
@@ -5101,18 +5185,10 @@ function cfgModalSaveHandler(){
     <input type="text" id="cfgEditName" placeholder="例: 防水冲锋衣裤">
     <label>是否强制装备</label>
     <select id="cfgEditMandatory"><option value="false">可选</option><option value="true">🔴 强制</option></select>
-    <label>显示条件（可选）</label>
-    <div class="cond-row">
-      <select id="cfgEditCondField"><option value="">无</option><option value="precipProb">降水概率</option><option value="tempMax">最高气温</option><option value="tempMin">最低气温</option><option value="windSpeed">风速</option><option value="uvi">紫外线UVI</option><option value="humidity">湿度</option><option value="visibility">能见度</option></select>
-      <select id="cfgEditCondOp"><option value=">">&gt;</option><option value="<">&lt;</option><option value=">=">≥</option><option value="<=">≤</option><option value="==">=</option></select>
-      <input type="number" id="cfgEditCondValue" placeholder="值" style="width:60px;">
-    </div>
-    <label>高亮条件（可选）</label>
-    <div class="cond-row">
-      <select id="cfgEditHlField"><option value="">无</option><option value="precipProb">降水概率</option><option value="tempMax">最高气温</option><option value="tempMin">最低气温</option><option value="windSpeed">风速</option><option value="uvi">紫外线UVI</option><option value="humidity">湿度</option></select>
-      <select id="cfgEditHlOp"><option value=">">&gt;</option><option value="<">&lt;</option><option value=">=">≥</option><option value="<=">≤</option><option value="==">=</option></select>
-      <input type="number" id="cfgEditHlValue" placeholder="值" style="width:60px;">
-    </div>
+    <label>显示条件 when（可选，组内 AND · 组间 OR）</label>
+    <div id="cfgWhenBuilder"></div>
+    <label>高亮条件 hint（可选）</label>
+    <div id="cfgHintBuilder"></div>
     <div class="btn-row">
       <button class="btn" id="cfgModalCancel">取消</button>
       <button class="btn btn-save" id="cfgModalSave">保存</button>    </div>
