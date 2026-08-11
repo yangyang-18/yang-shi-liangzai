@@ -1654,7 +1654,7 @@ function toUnifiedMB(mb,loc,days){
 // 私钥文件：qweather-private.pem（Ed25519 PKCS#8 PEM），经「🔑 导入和风 Key」运行时导入。
 // 认证：crypto.subtle.importKey(pkcs8,{name:'Ed25519'},false,['sign'])（extractable:false，密钥只存 WebCrypto 内部）
 // → crypto.subtle.sign('Ed25519',...) 签 JWT(alg:'EdDSA') → token=<JWT>（30 分钟 TTL 缓存，过期重签）
-const QW_API_HOST='mm487uud2y.re.qweatherapi.com'; // Console V4 独立 API Host（控制台-设置）；天气+Geo 均走此域
+const QW_API_HOST='mm487uud2y.re.qweatherapi.com'; // 默认 API Host（本账号，控制台-设置）；仅作未配置时的兜底，实际值以 localStorage qw_host 为准
 var QW_API_KEY=''; // 明文 API key（走 X-QW-Api-Key 认证）；和风认证一般用「🔑 导入和风私钥」的 JWT 路线，明文留空即可
 var QW_KID='';     // 和风凭据 ID（JWT header kid，控制台-项目管理）— 运行时经「🔐 数据源设置」配置（localStorage qw_kid），源码零值
 var QW_SUB='';     // 和风项目 ID（JWT payload sub，控制台-项目管理）— 运行时同上（localStorage qw_sub）
@@ -1701,6 +1701,16 @@ function qwGetPem(){
 }
 function qwGetKid(){try{var v=localStorage.getItem('qw_kid');if(v&&v.length)return v;}catch(e){}return QW_KID||'';}
 function qwGetSub(){try{var v=localStorage.getItem('qw_sub');if(v&&v.length)return v;}catch(e){}return QW_SUB||'';}
+function qwGetHost(){try{var v=localStorage.getItem('qw_host');if(v&&v.trim())return v.trim();}catch(e){}return QW_API_HOST;} // 未配置时兜底默认 host（本账号）
+function qwSetHost(host){
+  host=String(host||'').trim();
+  if(host&&!/^[a-z0-9.-]+$/i.test(host))throw new Error('和风 API Host 格式不正确（应为 qweatherapi.com 子域，如 abc.re.qweatherapi.com）');
+  try{
+    if(host)localStorage.setItem('qw_host',host);
+    else localStorage.removeItem('qw_host'); // 清空=回退默认 host
+    return true;
+  }catch(e){throw new Error('无法保存和风 API Host：'+e.message);}
+}
 function qwSetCred(kid,sub){
   try{
     if(String(kid||'').trim())localStorage.setItem('qw_kid',String(kid).trim());
@@ -1801,7 +1811,7 @@ async function qwFetchRaw(url,headers,ms){
 }
 async function qwFetch(path,params,ms,host){
   var p=new URLSearchParams(params||{});
-  var url='https://'+(host||QW_API_HOST)+path+'?'+p.toString();
+  var url='https://'+(host||qwGetHost())+path+'?'+p.toString();
   var headers={};
   var auth=qwAuth();
   // 官方认证头：JWT → Authorization: Bearer；明文 API key → X-QW-Api-Key（不用 token=/key= 参数）
@@ -4872,6 +4882,12 @@ function refreshKeysStatus(){
   keysSetStatus('keysMeteoblueStatus',k.meteoblue);
   try{keysSetStatus('keysQwKidStatus',localStorage.getItem('qw_kid'));}catch(e){}
   try{keysSetStatus('keysQwSubStatus',localStorage.getItem('qw_sub'));}catch(e){}
+  try{
+    var hEl=document.getElementById('keysQwHostStatus');
+    var h=localStorage.getItem('qw_host');
+    if(h&&h.trim()){hEl.textContent='✓ 已配置';hEl.className='key-status ok';}
+    else{hEl.textContent='未配置';hEl.className='key-status';}
+  }catch(e){}
 }
 function keysOpen(){
   var k=keyGetAll();
@@ -4882,6 +4898,7 @@ function keysOpen(){
     var kk=document.getElementById('keysQwKid'),ks=document.getElementById('keysQwSub');
     if(kk)kk.value=String(localStorage.getItem('qw_kid')||'');
     if(ks)ks.value=String(localStorage.getItem('qw_sub')||'');
+    // 和风 API Host 不预填，留空由用户自行填写（避免暴露默认 host）
   }catch(e){}
   refreshKeysStatus();
   document.getElementById('keysOverlay').classList.remove('hidden');
@@ -4898,6 +4915,8 @@ function keysSave(){
     });
     var kk=document.getElementById('keysQwKid'),ks=document.getElementById('keysQwSub');
     qwSetCred(kk?kk.value:'',ks?ks.value:''); // 和风 凭据ID/项目ID（空值=清除）；不改私钥，私钥走「🔑」
+    var kh=document.getElementById('keysQwHost');
+    if(kh)qwSetHost(kh.value); // 和风 API Host（空值=回退默认）
   }catch(e){keysAlert('error','无法保存：'+e.message);return;}
   refreshKeysStatus();
   keysAlert('success','已保存（Key 仅存本机浏览器）');
@@ -5174,7 +5193,7 @@ function cfgModalSaveHandler(){
   </div>
   <div id="keysAlertArea" style="padding:0 20px;max-width:720px;margin:0 auto;width:100%;"></div>
   <div class="cfg-body">
-    <p style="font-size:.72rem;color:var(--text-2,#64748b);margin:4px 0 18px;line-height:1.6;">Key 仅存本机浏览器（localStorage），不写入源码、不进任何导出物（单文件 HTML / 分享卡 PNG / 装备配置 JSON）。和风私钥用工具栏「🔑 导入和风私钥」，其 凭据ID(kid)/项目ID(sub) 在此下方填写。每个 Key 可直接粘贴，或用 📄 从 Key 文件导入。</p>
+    <p style="font-size:.72rem;color:var(--text-2,#64748b);margin:4px 0 18px;line-height:1.6;">Key 仅存本机浏览器（localStorage），不写入源码、不进任何导出物（单文件 HTML / 分享卡 PNG / 装备配置 JSON）。和风私钥用工具栏「🔑 导入和风私钥」，其 API Host（控制台-设置）与 凭据ID(kid)/项目ID(sub)（控制台-项目管理）在此下方填写。每个 Key 可直接粘贴，或用 📄 从 Key 文件导入。</p>
     <div style="margin-bottom:16px;">
       <label style="display:block;font-size:.72rem;font-weight:600;color:var(--text-pri,#1e293b);margin-bottom:4px;">高德 Key</label>
       <div style="display:flex;gap:6px;">
@@ -5194,6 +5213,11 @@ function cfgModalSaveHandler(){
       <div class="key-status" id="keysMeteoblueStatus"></div>
     </div>
     <div style="margin-bottom:8px;border-top:1px solid var(--line,#e2e8f0);padding-top:14px;">
+      <label style="display:block;font-size:.72rem;font-weight:600;color:var(--text-pri,#1e293b);margin-bottom:4px;">🌏 和风 API Host</label>
+      <input type="text" id="keysQwHost" class="key-input" placeholder="控制台-设置 → API Host（每账号独立，如 abc123.re.qweatherapi.com）" autocomplete="off" spellcheck="false" style="width:100%;">
+      <div class="key-status" id="keysQwHostStatus"></div>
+    </div>
+    <div style="margin-bottom:8px;">
       <label style="display:block;font-size:.72rem;font-weight:600;color:var(--text-pri,#1e293b);margin-bottom:4px;">🌏 和风 凭据 ID (kid)</label>
       <input type="password" id="keysQwKid" class="key-input" placeholder="控制台-项目管理 → 凭据 ID（JWT header kid）" autocomplete="off" spellcheck="false" style="width:100%;">
       <div class="key-status" id="keysQwKidStatus"></div>
