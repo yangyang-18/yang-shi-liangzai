@@ -1656,8 +1656,8 @@ function toUnifiedMB(mb,loc,days){
 // → crypto.subtle.sign('Ed25519',...) 签 JWT(alg:'EdDSA') → token=<JWT>（30 分钟 TTL 缓存，过期重签）
 const QW_API_HOST='mm487uud2y.re.qweatherapi.com'; // Console V4 独立 API Host（控制台-设置）；天气+Geo 均走此域
 var QW_API_KEY=''; // 明文 API key（走 X-QW-Api-Key 认证）；和风认证一般用「🔑 导入和风私钥」的 JWT 路线，明文留空即可
-const QW_KID='CMGTQTW3GB';   // 和风凭据 ID（JWT header kid，控制台-项目管理）
-const QW_SUB='2NTGGR3PK8';   // 和风项目 ID（JWT payload sub，控制台-项目管理）
+var QW_KID='';     // 和风凭据 ID（JWT header kid，控制台-项目管理）— 运行时经「🔐 数据源设置」配置（localStorage qw_kid），源码零值
+var QW_SUB='';     // 和风项目 ID（JWT payload sub，控制台-项目管理）— 运行时同上（localStorage qw_sub）
 const QW_TOKEN_TTL=30*60*1000;
 var _qwCryptoKey=null;   // 不可导出的 CryptoKey（仅存 WebCrypto 内部）
 var _qwJwt={token:null,exp:0};
@@ -1699,8 +1699,17 @@ function qwGetPem(){
   }catch(e){}
   return ''; // QW_API_KEY 是明文 key 不是 PEM，不得混用
 }
-function qwGetKid(){return QW_KID||'';}
-function qwGetSub(){return QW_SUB||'';}
+function qwGetKid(){try{var v=localStorage.getItem('qw_kid');if(v&&v.length)return v;}catch(e){}return QW_KID||'';}
+function qwGetSub(){try{var v=localStorage.getItem('qw_sub');if(v&&v.length)return v;}catch(e){}return QW_SUB||'';}
+function qwSetCred(kid,sub){
+  try{
+    if(String(kid||'').trim())localStorage.setItem('qw_kid',String(kid).trim());
+    else localStorage.removeItem('qw_kid');
+    if(String(sub||'').trim())localStorage.setItem('qw_sub',String(sub).trim());
+    else localStorage.removeItem('qw_sub');
+    return true;
+  }catch(e){throw new Error('无法保存和风凭据：'+e.message);}
+}
 function qwSetPem(pem){
   try{localStorage.setItem('qw_pem',pem);}catch(e){throw new Error('无法保存 Key：'+e.message);}
   _qwCryptoKey=null;_qwJwt={token:null,exp:0};
@@ -1762,7 +1771,7 @@ async function qwSignJWT(){
   var key=await qwEnsureKey();
   var kid=qwGetKid();
   var sub=qwGetSub();
-  if(!kid||!sub)throw new Error('缺少和风凭据配置：请在「🔑」旁填写 凭据ID(kid) 与 项目ID(sub)（控制台-项目管理）');
+  if(!kid||!sub)throw new Error('缺少和风凭据配置：请点击「🔐 数据源设置」填写 凭据ID(kid) 与 项目ID(sub)（控制台-项目管理）');
   var now=Math.floor(Date.now()/1000);
   // 和风 JWT 要求：header 必含 kid（凭据 ID）；payload sub=项目 ID、iat 提前 30s 抵消时差、exp≤24h（此处 30min）
   var header={alg:'EdDSA',kid:kid};
@@ -3872,7 +3881,8 @@ async function refreshQwKeyStatus(){
   if(pem){
     try{
       await qwFingerprint(pem); // 校验私钥有效性（无效则抛错）
-      updateQwKeyStatus('和风私钥');
+      if(qwGetKid()&&qwGetSub())updateQwKeyStatus('和风私钥');
+      else updateQwKeyStatus('和风私钥 · ⚠ 缺 凭据ID/项目ID（🔐 数据源设置）');
       return;
     }catch(e){}
   }
@@ -4860,12 +4870,19 @@ function refreshKeysStatus(){
   var k=keyGetAll();
   keysSetStatus('keysAmapStatus',k.amap);
   keysSetStatus('keysMeteoblueStatus',k.meteoblue);
+  try{keysSetStatus('keysQwKidStatus',localStorage.getItem('qw_kid'));}catch(e){}
+  try{keysSetStatus('keysQwSubStatus',localStorage.getItem('qw_sub'));}catch(e){}
 }
 function keysOpen(){
   var k=keyGetAll();
   var amap=document.getElementById('keysAmap'),mb=document.getElementById('keysMeteoblue');
   if(amap)amap.value=String(k.amap||'');
   if(mb)mb.value=String(k.meteoblue||'');
+  try{
+    var kk=document.getElementById('keysQwKid'),ks=document.getElementById('keysQwSub');
+    if(kk)kk.value=String(localStorage.getItem('qw_kid')||'');
+    if(ks)ks.value=String(localStorage.getItem('qw_sub')||'');
+  }catch(e){}
   refreshKeysStatus();
   document.getElementById('keysOverlay').classList.remove('hidden');
 }
@@ -4879,6 +4896,8 @@ function keysSave(){
       amap:String(amap?amap.value:'').trim(),
       meteoblue:String(mb?mb.value:'').trim()
     });
+    var kk=document.getElementById('keysQwKid'),ks=document.getElementById('keysQwSub');
+    qwSetCred(kk?kk.value:'',ks?ks.value:''); // 和风 凭据ID/项目ID（空值=清除）；不改私钥，私钥走「🔑」
   }catch(e){keysAlert('error','无法保存：'+e.message);return;}
   refreshKeysStatus();
   keysAlert('success','已保存（Key 仅存本机浏览器）');
@@ -5155,7 +5174,7 @@ function cfgModalSaveHandler(){
   </div>
   <div id="keysAlertArea" style="padding:0 20px;max-width:720px;margin:0 auto;width:100%;"></div>
   <div class="cfg-body">
-    <p style="font-size:.72rem;color:var(--text-2,#64748b);margin:4px 0 18px;line-height:1.6;">Key 仅存本机浏览器（localStorage），不写入源码、不进任何导出物（单文件 HTML / 分享卡 PNG / 装备配置 JSON）。和风私钥用工具栏「🔑 导入和风私钥」。每个 Key 可直接粘贴，或用 📄 从 Key 文件导入。</p>
+    <p style="font-size:.72rem;color:var(--text-2,#64748b);margin:4px 0 18px;line-height:1.6;">Key 仅存本机浏览器（localStorage），不写入源码、不进任何导出物（单文件 HTML / 分享卡 PNG / 装备配置 JSON）。和风私钥用工具栏「🔑 导入和风私钥」，其 凭据ID(kid)/项目ID(sub) 在此下方填写。每个 Key 可直接粘贴，或用 📄 从 Key 文件导入。</p>
     <div style="margin-bottom:16px;">
       <label style="display:block;font-size:.72rem;font-weight:600;color:var(--text-pri,#1e293b);margin-bottom:4px;">高德 Key</label>
       <div style="display:flex;gap:6px;">
@@ -5173,6 +5192,16 @@ function cfgModalSaveHandler(){
       </div>
       <input type="file" id="keysMeteoblueFile" accept=".key,.txt,.json,.pem" style="display:none">
       <div class="key-status" id="keysMeteoblueStatus"></div>
+    </div>
+    <div style="margin-bottom:8px;border-top:1px solid var(--line,#e2e8f0);padding-top:14px;">
+      <label style="display:block;font-size:.72rem;font-weight:600;color:var(--text-pri,#1e293b);margin-bottom:4px;">🌏 和风 凭据 ID (kid)</label>
+      <input type="password" id="keysQwKid" class="key-input" placeholder="控制台-项目管理 → 凭据 ID（JWT header kid）" autocomplete="off" spellcheck="false" style="width:100%;">
+      <div class="key-status" id="keysQwKidStatus"></div>
+    </div>
+    <div style="margin-bottom:8px;">
+      <label style="display:block;font-size:.72rem;font-weight:600;color:var(--text-pri,#1e293b);margin-bottom:4px;">🌏 和风 项目 ID (sub)</label>
+      <input type="password" id="keysQwSub" class="key-input" placeholder="控制台-项目管理 → 项目 ID（JWT payload sub）" autocomplete="off" spellcheck="false" style="width:100%;">
+      <div class="key-status" id="keysQwSubStatus"></div>
     </div>
   </div>
 </div>
